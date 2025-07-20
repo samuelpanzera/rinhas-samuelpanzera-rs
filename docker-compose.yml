@@ -8,6 +8,8 @@ services:
     environment:
       - SERVER_ID=api-1
       - PORT=1313 
+      - PAYMENT_PROCESSOR_URL_DEFAULT=http://payment-processor-default:8080
+      - PAYMENT_PROCESSOR_URL_FALLBACK=http://payment-processor-fallback:8080
     networks:
      - backend-rs
      - payment-processor
@@ -21,6 +23,8 @@ services:
     hostname: "api-2"
     environment:
       - SERVER_ID=api-2
+      - PAYMENT_PROCESSOR_URL_DEFAULT=http://payment-processor-default:8080
+      - PAYMENT_PROCESSOR_URL_FALLBACK=http://payment-processor-fallback:8080
   nginx:
     image: nginx:1.27-alpine
     ports:

@@ -1,4 +1,3 @@
-use may::
 fn main() {
-    
+    println!("Hello, world!");
 }

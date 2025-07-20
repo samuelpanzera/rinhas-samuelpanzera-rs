@@ -1,0 +1,21 @@
+{
+  "name": "Samuel Panzera",
+  "social": [
+    "https://www.linkedin.com/in/samuelpanzera/"
+  ],
+  "source-code-repo": "https://github.com/samuelpanzera/rinha-samuelpanzera-rs",
+  "langs": [
+    "rust",
+    "mini-http"
+  ],
+  "storages": [
+    "postgresql"
+  ],
+  "messaging": [],
+  "load-balancers": [
+    "nginx"
+  ],
+  "other-technologies": [
+    ""
+  ]
+}

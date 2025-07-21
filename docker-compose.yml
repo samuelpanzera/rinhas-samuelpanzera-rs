@@ -16,7 +16,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.7"
+          cpus: "1"
           memory: "135M"
   api2: 
     <<: *api-base
@@ -28,9 +28,9 @@ services:
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "1313:80"
+      - "9999:9999"
     depends_on:
-      app1:
+      api1:
         condition: service_started
       api2:
         condition: service_started

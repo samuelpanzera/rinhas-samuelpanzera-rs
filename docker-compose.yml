@@ -7,7 +7,7 @@ services:
     hostname: "api-1"
     environment:
       - SERVER_ID=api-1
-      - PORT=1313 
+      - PORT=14 
       - PAYMENT_PROCESSOR_URL_DEFAULT=http://payment-processor-default:8080
       - PAYMENT_PROCESSOR_URL_FALLBACK=http://payment-processor-fallback:8080
     networks:
@@ -23,12 +23,13 @@ services:
     hostname: "api-2"
     environment:
       - SERVER_ID=api-2
+      - PORT=14
       - PAYMENT_PROCESSOR_URL_DEFAULT=http://payment-processor-default:8080
       - PAYMENT_PROCESSOR_URL_FALLBACK=http://payment-processor-fallback:8080
   nginx:
     image: nginx:1.27-alpine
     ports:
-      - "9999:9999"
+      - "9999:14"
     depends_on:
       api1:
         condition: service_started

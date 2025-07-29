@@ -1,1 +1,9 @@
 /target
+
+rinha.db
+rinha.db-wal
+rinha.db-shm
+
+info.json
+
+cargo.lock

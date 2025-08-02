@@ -5,11 +5,10 @@
   ],
   "source-code-repo": "https://github.com/samuelpanzera/rinha-samuelpanzera-rs",
   "langs": [
-    "rust",
-    "mini-http"
+    "rust"
   ],
   "storages": [
-    "postgresql"
+    "memory-mapped-file"
   ],
   "messaging": [],
   "load-balancers": [

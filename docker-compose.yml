@@ -10,9 +10,13 @@ services:
       - PORT=14 
       - PAYMENT_PROCESSOR_URL_DEFAULT=http://payment-processor-default:8080
       - PAYMENT_PROCESSOR_URL_FALLBACK=http://payment-processor-fallback:8080
+      - SHARED_MEMORY_PATH=/tmp/shared_memory
     networks:
      - backend-rs
      - payment-processor
+    volumes:
+      - shared_memory:/tmp/shared_memory
+    ipc: shareable
     deploy:
       resources:
         limits:
@@ -26,6 +30,8 @@ services:
       - PORT=14
       - PAYMENT_PROCESSOR_URL_DEFAULT=http://payment-processor-default:8080
       - PAYMENT_PROCESSOR_URL_FALLBACK=http://payment-processor-fallback:8080
+      - SHARED_MEMORY_PATH=/tmp/shared_memory
+    ipc: shareable
   nginx:
     image: nginx:1.27-alpine
     ports:
@@ -42,8 +48,17 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.1"
-          memory: 80M # 55Mb é suficiente? 
+          cpus: "0.2"
+          memory: 70M
+
+volumes:
+  shared_memory:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=10m,uid=1000,gid=1000
+
 networks:
   backend-rs:
     driver: bridge

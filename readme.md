@@ -12,7 +12,7 @@ A meta era clara: criar a API mais rápida e eficiente possível para o desafio.
     
 -   **Framework Web:** ⚙️ **May/May-MiniHttp** - Um framework Rust minimalista que utiliza corrotinas (green threads), permitindo um altíssimo grau de concorrência com um custo muito baixo de recursos.
     
--   **Banco de Dados:** 🗄️ **SQLite (Embedded)** - O banco de dados roda _dentro_ da própria aplicação, uma decisão chave para eliminar a latência de rede e economizar recursos.
+-  **Banco de Dados:** Memoria compartilhada para Máxima perfomance
     
 -   **Load Balancer:** **Nginx** - Para distribuir a carga de forma eficiente entre duas instâncias da API, garantindo alta disponibilidade e escalabilidade horizontal.
     
@@ -45,7 +45,7 @@ A decisão mais impactante na arquitetura deste projeto foi a escolha de um **ba
     
 -   [x] 📊 API para resumo de pagamentos (`GET /payments-summary`)
     
--   [x] 🗄️ Estrutura e otimizações do banco de dados SQLite com `PRAGMA`
+-   [x] 🗄️ Estrutura e otimizações de uma simulação de banco de dados
     
 -   [x] ⚖️ Configuração do Load Balancer com Nginx para duas instâncias
     

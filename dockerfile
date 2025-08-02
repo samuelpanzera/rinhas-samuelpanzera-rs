@@ -15,7 +15,7 @@ CMD ["sh"]
 
 # Build
 FROM rust:1.88-alpine AS builder
-RUN apk add --no-cache build-base musl-dev
+RUN apk add --no-cache build-base musl-dev openssl-dev openssl-libs-static pkgconfig
 
 RUN rustup target add x86_64-unknown-linux-musl
 

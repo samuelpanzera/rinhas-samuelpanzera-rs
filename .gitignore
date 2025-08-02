@@ -7,3 +7,5 @@ rinha.db-shm
 info.json
 
 cargo.lock
+
+.cursor

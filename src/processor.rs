@@ -17,7 +17,6 @@ pub struct QueuedPayment {
     pub amount: Decimal,
     pub amount_cents: u16,
     pub retry_count: u8,
-    // processed_at removido - será calculado no momento do processamento real
 }
 
 pub struct PaymentProcessor {
@@ -27,11 +26,10 @@ pub struct PaymentProcessor {
 impl PaymentProcessor {
     pub fn new(shared_memory: Arc<SharedMemoryManager>) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
-        let tx_clone = tx.clone(); // Clone for re-queuing
 
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-            rt.block_on(Self::payment_worker(rx, shared_memory, tx_clone));
+            rt.block_on(Self::payment_worker(rx, shared_memory));
         });
 
         Self { tx }
@@ -47,32 +45,19 @@ impl PaymentProcessor {
     async fn payment_worker(
         mut rx: mpsc::UnboundedReceiver<QueuedPayment>,
         shared_memory: Arc<SharedMemoryManager>,
-        tx: mpsc::UnboundedSender<QueuedPayment>, // For re-queuing
     ) {
-        while let Some(mut payment) = rx.recv().await {
-            println!("🔄 Processing payment: {}", payment.correlation_id);
-
+        while let Some(payment) = rx.recv().await {
             let mut success = false;
 
-            // Try default processor 5 times with 500ms intervals
             for attempt in 1..=5 {
-                println!(
-                    "🎯 Default processor attempt {}/5 for payment {}",
-                    attempt, payment.correlation_id
-                );
 
                 match Self::call_processor(&payment, true).await {
                     Ok(_) => {
-                        println!(
-                            "✅ Default processor success for payment {}",
-                            payment.correlation_id
-                        );
                         Self::save_successful_payment(&payment, true, &shared_memory).await;
                         success = true;
                         break;
                     }
-                    Err(e) => {
-                        println!("❌ Default processor attempt {} failed: {}", attempt, e);
+                    Err(_) => {
                         if attempt < 5 {
                             sleep(Duration::from_millis(500)).await;
                         }
@@ -81,48 +66,15 @@ impl PaymentProcessor {
             }
 
             if !success {
-                println!(
-                    "🔄 Trying fallback processor for payment {}",
-                    payment.correlation_id
-                );
-
                 match Self::call_processor(&payment, false).await {
                     Ok(_) => {
-                        println!(
-                            "✅ Fallback processor success for payment {}",
-                            payment.correlation_id
-                        );
                         Self::save_successful_payment(&payment, false, &shared_memory).await;
-                        success = true;
                     }
-                    Err(e) => {
-                        println!("❌ Fallback processor failed: {}", e);
-                    }
+                    Err(_) => {}
                 }
             }
 
-            if !success {
-                payment.retry_count += 1;
-                if payment.retry_count < 3 {
-                    // Limit retries to prevent infinite loops
-                    println!(
-                        "🔁 Re-queuing payment {} (retry {})",
-                        payment.correlation_id, payment.retry_count
-                    );
 
-                    // Add delay before re-queuing to avoid overwhelming the processors
-                    sleep(Duration::from_secs(5)).await;
-
-                    if let Err(e) = tx.send(payment) {
-                        println!("❌ Failed to re-queue payment: {}", e);
-                    }
-                } else {
-                    println!(
-                        "💀 Payment {} failed after maximum retries",
-                        payment.correlation_id
-                    );
-                }
-            }
         }
     }
 
@@ -140,23 +92,17 @@ impl PaymentProcessor {
 
         let url = format!("{}/payments", base_url);
 
-        // Calcula timestamp no momento da requisição ao processador
         let requested_at = Utc::now();
 
         let processor_request = ProcessorPaymentRequest {
             correlation_id: &payment.correlation_id,
             amount: &payment.amount,
-            requested_at, // ← Timestamp do momento da requisição
+            requested_at,
         };
 
         let json_body = serde_json::to_string(&processor_request)?;
 
-        println!("🅰️ Sending request to {} with body: {}", url, json_body);
-
-        // Using tokio's HTTP client for maximum efficiency
         let client = reqwest::Client::new();
-
-        // 10 second timeout for HTTP requests
         let response = timeout(
             Duration::from_secs(10),
             client
@@ -179,23 +125,10 @@ impl PaymentProcessor {
         is_default_processor: bool,
         shared_memory: &Arc<SharedMemoryManager>,
     ) {
-        // 🕐 CALCULA TIMESTAMP NO MOMENTO REAL DO PROCESSAMENTO BEM-SUCEDIDO
-        let processed_at = Utc::now();
-
-        println!(
-            "⏰ Processing timestamp calculated: {} for payment {}",
-            processed_at, payment.correlation_id
-        );
-
-        // Add to shared memory with timestamp calculado no momento do sucesso
-        shared_memory.add_payment(
+        shared_memory.add_payment_if_new(
+            payment.correlation_id,
             payment.amount_cents,
             is_default_processor,
-            processed_at, // ← Timestamp do momento real do processamento
-        );
-        println!(
-            "📊 Payment added to shared memory: {} at {}",
-            payment.correlation_id, processed_at
         );
     }
 }

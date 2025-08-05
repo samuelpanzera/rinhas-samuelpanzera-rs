@@ -4,7 +4,6 @@ mod processor;
 mod server;
 mod shared_mem;
 
-// Removed db module - using simplified approach
 use may_minihttp::HttpServiceFactory;
 use server::RinhaBackendFactory;
 use std::env;
@@ -16,12 +15,7 @@ fn main() {
         "🚀 Iniciando servidor na porta {} usando corrotinas...",
         port
     );
-    println!("🔍 DEBUG: Rotas disponíveis:");
-    println!("  - POST /payments");
-    println!("  - GET /payments-summary");
-
     let factory = RinhaBackendFactory::new();
-    println!("🔍 DEBUG: RinhaBackendFactory criado com sucesso");
 
     let server = factory
         .start(format!("0.0.0.0:{}", port))

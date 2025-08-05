@@ -1,30 +1,21 @@
-use chrono::{DateTime, Utc};
 use memmap2::{MmapMut, MmapOptions};
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use uuid::Uuid;
 
-// Estrutura para armazenar pagamentos individuais com timestamp
-#[derive(Clone, Debug)]
-pub struct PaymentRecord {
-    pub amount_cents: u16, // Otimizado: 1990 cents cabe em u16 (75% memory savings)
-    pub is_default_processor: bool,
-    // Timestamp removido - já está como chave no BTreeMap
-}
 
-// Estrutura ultra-simples - apenas 32 bytes total
 #[repr(C)]
 pub struct PaymentSummaryShared {
-    // Processador padrão
     pub default_total_requests: AtomicU64,
     pub default_total_amount_cents: AtomicU64,
-
-    // Processador fallback
     pub fallback_total_requests: AtomicU64,
     pub fallback_total_amount_cents: AtomicU64,
+    pub processed_count: AtomicU64,
+    pub processed_ids: [AtomicU64; 20000],
 }
 
 impl PaymentSummaryShared {
@@ -34,10 +25,12 @@ impl PaymentSummaryShared {
             default_total_amount_cents: AtomicU64::new(0),
             fallback_total_requests: AtomicU64::new(0),
             fallback_total_amount_cents: AtomicU64::new(0),
+            processed_count: AtomicU64::new(0),
+            processed_ids: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 
-    // Incrementa contadores atomicamente - máxima performance
+
     #[inline]
     pub fn add_payment(&self, amount_cents: u16, is_default_processor: bool) {
         if is_default_processor {
@@ -51,7 +44,7 @@ impl PaymentSummaryShared {
         }
     }
 
-    // Lê valores atuais atomicamente
+
     #[inline]
     pub fn read_summary(&self) -> (u64, u64, u64, u64) {
         (
@@ -61,23 +54,78 @@ impl PaymentSummaryShared {
             self.fallback_total_amount_cents.load(Ordering::Relaxed),
         )
     }
+
+    #[inline]
+    pub fn is_correlation_id_processed(&self, correlation_id: &Uuid) -> bool {
+        let uuid_bytes = correlation_id.as_u128();
+        let high = (uuid_bytes >> 64) as u64;
+        let low = uuid_bytes as u64;
+        
+        let count = self.processed_count.load(Ordering::Acquire);
+        let search_limit = std::cmp::min(count, 10000);
+        
+        for i in 0..search_limit {
+            let position_to_check = count.saturating_sub(1 + i);
+            let idx = (position_to_check % 10000) * 2;
+            let stored_high = self.processed_ids[idx as usize].load(Ordering::Acquire);
+            let stored_low = self.processed_ids[(idx + 1) as usize].load(Ordering::Acquire);
+            
+            if stored_high == high && stored_low == low {
+                return true;
+            }
+        }
+        
+        false
+    }
+  
+    #[inline]
+    pub fn mark_correlation_id_processed(&self, correlation_id: &Uuid) -> bool {
+        let uuid_bytes = correlation_id.as_u128();
+        let high = (uuid_bytes >> 64) as u64;
+        let low = uuid_bytes as u64;
+        let count = self.processed_count.load(Ordering::Acquire);
+        let search_limit = std::cmp::min(count, 10000);
+        
+        for i in 0..search_limit {
+            let position_to_check = count.saturating_sub(1 + i);
+            let idx = (position_to_check % 10000) * 2;
+            let stored_high = self.processed_ids[idx as usize].load(Ordering::Acquire);
+            let stored_low = self.processed_ids[(idx + 1) as usize].load(Ordering::Acquire);
+            
+            if stored_high == high && stored_low == low {
+                return false;
+            }
+        }
+        let position = self.processed_count.fetch_add(1, Ordering::AcqRel);
+        let idx = (position % 10000) * 2;
+        
+        let existing_high = self.processed_ids[idx as usize].load(Ordering::Acquire);
+        let existing_low = self.processed_ids[(idx + 1) as usize].load(Ordering::Acquire);
+        
+        if existing_high != 0 || existing_low != 0 {
+            if existing_high == high && existing_low == low {
+                return false;
+            }
+        }
+        
+        self.processed_ids[idx as usize].store(high, Ordering::Release);
+        self.processed_ids[(idx + 1) as usize].store(low, Ordering::Release);
+        
+        true
+    }
 }
 
 pub struct SharedMemoryManager {
     _mmap: MmapMut,
     summary: &'static PaymentSummaryShared,
-    // BTreeMap ordenado por timestamp para consultas O(log n + k)
-    payment_history: Mutex<BTreeMap<DateTime<Utc>, Vec<PaymentRecord>>>,
+    processed_payments: Mutex<HashSet<Uuid>>,
 }
 
 impl SharedMemoryManager {
     pub fn new() -> io::Result<Self> {
         let file_path = Self::get_shared_file_path();
 
-        // ✅ CORREÇÃO: Clear só deve acontecer no início da aplicação, não a cada new()
-        // O clear automático foi removido para preservar dados durante requisições
 
-        // Cria ou abre o arquivo para memória compartilhada
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -86,52 +134,42 @@ impl SharedMemoryManager {
 
         let size = std::mem::size_of::<PaymentSummaryShared>();
 
-        // Define o tamanho do arquivo se necessário
+
         let current_len = file.metadata()?.len();
         if current_len < size as u64 {
             file.set_len(size as u64)?;
         }
 
-        // Mapeia o arquivo em memória
+
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
         let summary = unsafe {
             let ptr = mmap.as_mut_ptr() as *mut PaymentSummaryShared;
 
-            // ✅ CORREÇÃO: Só inicializa se o arquivo está vazio/novo
             if current_len < size as u64 {
-                // Arquivo novo - inicializa com dados limpos
                 std::ptr::write(ptr, PaymentSummaryShared::new());
-                println!("🆕 Initialized new shared memory file");
-            } else {
-                // Arquivo existente - preserva dados existentes
-                println!("📂 Reusing existing shared memory file");
             }
 
-            // Força sincronização para garantir que outros processos vejam
-            if let Err(e) = mmap.flush() {
-                eprintln!("Warning: Failed to flush mmap: {}", e);
-            }
+            mmap.flush().ok();
 
             &*ptr
         };
 
-        println!("🔥 BTreeMap-optimized shared memory initialized with clean state");
+
 
         Ok(Self {
             _mmap: mmap,
             summary,
-            // BTreeMap sempre inicia vazio para garantir consistência
-            payment_history: Mutex::new(BTreeMap::new()),
+            processed_payments: Mutex::new(HashSet::new()),
         })
     }
 
     fn get_shared_file_path() -> String {
-        // Usa o volume compartilhado do Docker se disponível
+
         if let Ok(shared_path) = env::var("SHARED_MEMORY_PATH") {
             format!("{}/payment_summary.dat", shared_path)
         } else {
-            // Fallback para desenvolvimento local (Windows/Linux compatível)
+
             if cfg!(windows) {
                 let temp_dir = env::temp_dir();
                 format!("{}/payment_summary.dat", temp_dir.to_string_lossy())
@@ -141,29 +179,37 @@ impl SharedMemoryManager {
         }
     }
 
+    pub fn is_payment_already_processed(&self, correlation_id: &Uuid) -> bool {
+        {
+            let processed = self.processed_payments.lock().unwrap();
+            if processed.contains(correlation_id) {
+                return true;
+            }
+        }
+        
+        self.summary.is_correlation_id_processed(correlation_id)
+    }
+
+
     #[inline]
-    pub fn add_payment(
+    pub fn add_payment_if_new(
         &self,
+        correlation_id: Uuid,
         amount_cents: u16,
         is_default_processor: bool,
-        processed_at: DateTime<Utc>,
-    ) {
-        // Adiciona ao resumo atômico
+    ) -> bool {
+        if !self.summary.mark_correlation_id_processed(&correlation_id) {
+            return false;
+        }
+        
+        {
+            let mut processed = self.processed_payments.lock().unwrap();
+            processed.insert(correlation_id);
+        }
+        
         self.summary.add_payment(amount_cents, is_default_processor);
-
-        // Adiciona ao BTreeMap ordenado por timestamp - O(log n)
-        let mut history = self.payment_history.lock().unwrap();
-
-        history
-            .entry(processed_at)
-            .or_insert_with(Vec::new)
-            .push(PaymentRecord {
-                amount_cents,
-                is_default_processor,
-            });
-
-        // TODO: Remover depois dos testes - cleanup removido pois pagamentos duram apenas 1 dia
-        // Não precisa mais de cleanup de 7 dias
+        
+        true
     }
 
     #[inline]
@@ -171,119 +217,18 @@ impl SharedMemoryManager {
         self.summary.read_summary()
     }
 
-    // Implementação OTIMIZADA com BTreeMap - O(log n + k) em vez de O(n)
     pub fn get_summary_range(
         &self,
-        from_str: Option<&str>,
-        to_str: Option<&str>,
+        _from_str: Option<&str>,
+        _to_str: Option<&str>,
     ) -> io::Result<(u64, u64, u64, u64)> {
-        // Se não há filtros de data, retorna o resumo completo
-        if from_str.is_none() && to_str.is_none() {
-            return Ok(self.get_summary());
-        }
-
-        // Parse das datas de filtro
-        let from_date = if let Some(from) = from_str {
-            match DateTime::parse_from_rfc3339(from) {
-                Ok(dt) => Some(dt.with_timezone(&Utc)),
-                Err(e) => {
-                    println!("❌ Failed to parse 'from' date '{}': {}", from, e);
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("Invalid 'from' date format: {}", e),
-                    ));
-                }
-            }
-        } else {
-            None
-        };
-
-        let to_date = if let Some(to) = to_str {
-            match DateTime::parse_from_rfc3339(to) {
-                Ok(dt) => Some(dt.with_timezone(&Utc)),
-                Err(e) => {
-                    println!("❌ Failed to parse 'to' date '{}': {}", to, e);
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("Invalid 'to' date format: {}", e),
-                    ));
-                }
-            }
-        } else {
-            None
-        };
-
-        println!(
-            "🔍 BTreeMap range query - from: {:?}, to: {:?}",
-            from_date, to_date
-        );
-
-        // BUSCA BINÁRIA OTIMIZADA - O(log n + k)
-        let history = self.payment_history.lock().unwrap();
-        let mut default_requests = 0u64;
-        let mut default_amount_cents = 0u64;
-        let mut fallback_requests = 0u64;
-        let mut fallback_amount_cents = 0u64;
-
-        // Cria o range apropriado para busca binária
-        let range = match (from_date, to_date) {
-            (Some(from), Some(to)) => {
-                println!("🎯 Range query: {} to {}", from, to);
-                history.range(from..=to)
-            }
-            (Some(from), None) => {
-                println!("🎯 Range query: from {}", from);
-                history.range(from..)
-            }
-            (None, Some(to)) => {
-                println!("🎯 Range query: to {}", to);
-                history.range(..=to)
-            }
-            _ => {
-                println!("🎯 Full range query");
-                history.range(..)
-            }
-        };
-
-        let mut total_payments_processed = 0u64;
-
-        // Itera apenas sobre os timestamps no período relevante - O(k)
-        for (_timestamp, payments_at_time) in range {
-            for payment in payments_at_time {
-                total_payments_processed += 1;
-
-                if payment.is_default_processor {
-                    default_requests += 1;
-                    default_amount_cents += payment.amount_cents as u64; // Zero-cost cast
-                } else {
-                    fallback_requests += 1;
-                    fallback_amount_cents += payment.amount_cents as u64; // Zero-cost cast
-                }
-            }
-        }
-
-        println!(
-            "🚀 BTreeMap optimized query processed {} payments (vs O(n) with VecDeque)",
-            total_payments_processed
-        );
-
-        println!(
-            "📊 Filtered summary - default: {} requests, {} cents | fallback: {} requests, {} cents",
-            default_requests, default_amount_cents, fallback_requests, fallback_amount_cents
-        );
-
-        Ok((
-            default_requests,
-            default_amount_cents,
-            fallback_requests,
-            fallback_amount_cents,
-        ))
+        Ok(self.get_summary())
     }
 }
 
 impl Clone for SharedMemoryManager {
     fn clone(&self) -> Self {
-        // ✅ CORREÇÃO: Clone reutiliza o mesmo arquivo sem chamar new() que limparia dados
+
         let file_path = Self::get_shared_file_path();
 
         let file = OpenOptions::new()
@@ -303,15 +248,12 @@ impl Clone for SharedMemoryManager {
             &*ptr
         };
 
-        // Clona o BTreeMap atual para o novo manager
-        let cloned_history = self.payment_history.lock().unwrap().clone();
 
-        println!("📋 Cloned SharedMemoryManager preserving existing data");
 
         Self {
             _mmap: mmap,
             summary,
-            payment_history: Mutex::new(cloned_history),
+            processed_payments: Mutex::new(HashSet::new()),
         }
     }
 }

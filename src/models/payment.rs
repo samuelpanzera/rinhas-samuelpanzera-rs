@@ -3,7 +3,6 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize, Serializer};
 use uuid::Uuid;
 
-// Função customizada para serializar timestamp no formato exato: "2025-07-15T12:34:56.000Z"
 fn serialize_timestamp<S>(dt: &DateTime<Utc>, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -19,8 +18,7 @@ pub struct ApiPaymentRequest {
     pub amount: Decimal,
 }
 
-// PaymentData removido - não mais necessário após remoção do PaymentRepository
-// Todos os dados são salvos diretamente na SharedMemory
+
 
 #[derive(Serialize, Debug)]
 pub struct ProcessorPaymentRequest<'a> {

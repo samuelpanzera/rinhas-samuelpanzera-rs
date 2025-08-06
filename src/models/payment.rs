@@ -18,8 +18,6 @@ pub struct ApiPaymentRequest {
     pub amount: Decimal,
 }
 
-
-
 #[derive(Serialize, Debug)]
 pub struct ProcessorPaymentRequest<'a> {
     #[serde(rename = "correlationId")]

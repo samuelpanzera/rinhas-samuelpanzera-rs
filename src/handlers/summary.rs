@@ -17,7 +17,6 @@ pub fn handle_payments_summary(
 
     match result {
         Ok((default_requests, default_amount_cents, fallback_requests, fallback_amount_cents)) => {
-
             let default_amount_decimal = Decimal::new(default_amount_cents as i64, 2);
             let fallback_amount_decimal = Decimal::new(fallback_amount_cents as i64, 2);
 
@@ -46,14 +45,11 @@ pub fn handle_payments_summary(
                 .extend_from_slice(&json_body);
             Ok(())
         }
-        Err(e) => {
-            Err(e)
-        }
+        Err(e) => Err(e),
     }
 }
 
 fn parse_query_params_from_path(path: &str) -> (Option<String>, Option<String>) {
-
     if let Some(query_start) = path.find('?') {
         let query = &path[query_start + 1..];
 
@@ -84,7 +80,6 @@ fn parse_query_params_from_path(path: &str) -> (Option<String>, Option<String>) 
         (None, None)
     }
 }
-
 
 fn url_decode(input: &str) -> String {
     input

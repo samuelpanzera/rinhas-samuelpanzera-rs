@@ -1,12 +1,19 @@
 use chrono::{DateTime, Utc};
 use memmap2::{MmapMut, MmapOptions};
-use std::collections::HashSet;
 use std::env;
 use std::fs::OpenOptions;
 use std::io;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use uuid::Uuid;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct PaymentRecord {
+    pub amount_cents: u16,
+    pub is_default_processor: u8,
+    pub timestamp_secs: u64,
+    pub timestamp_nanos: u32,
+}
 
 #[repr(C)]
 pub struct PaymentSummaryShared {
@@ -16,6 +23,8 @@ pub struct PaymentSummaryShared {
     pub fallback_total_amount_cents: AtomicU64,
     pub processed_count: AtomicU64,
     pub processed_ids: [AtomicU64; 20000],
+    pub record_count: AtomicU64,
+    pub records: [PaymentRecord; 50000],
 }
 
 impl PaymentSummaryShared {
@@ -27,6 +36,13 @@ impl PaymentSummaryShared {
             fallback_total_amount_cents: AtomicU64::new(0),
             processed_count: AtomicU64::new(0),
             processed_ids: std::array::from_fn(|_| AtomicU64::new(0)),
+            record_count: AtomicU64::new(0),
+            records: std::array::from_fn(|_| PaymentRecord {
+                amount_cents: 0,
+                is_default_processor: 0,
+                timestamp_secs: 0,
+                timestamp_nanos: 0,
+            }),
         }
     }
 
@@ -53,57 +69,31 @@ impl PaymentSummaryShared {
         )
     }
 
-    // #[inline]
-    // pub fn mark_correlation_id_processed(&self, correlation_id: &Uuid) -> bool {
-    //     let uuid_bytes = correlation_id.as_u128();
-    //     let high = (uuid_bytes >> 64) as u64;
-    //     let low = uuid_bytes as u64;
-    //     let count = self.processed_count.load(Ordering::Acquire);
-    //     let search_limit = std::cmp::min(count, 10000);
+    #[inline]
+    pub fn add_payment_record(
+        &self,
+        amount_cents: u16,
+        is_default_processor: bool,
+        timestamp: DateTime<Utc>,
+    ) {
+        let record = PaymentRecord {
+            amount_cents,
+            is_default_processor: is_default_processor as u8,
+            timestamp_secs: timestamp.timestamp() as u64,
+            timestamp_nanos: timestamp.timestamp_subsec_nanos(),
+        };
 
-    //     for i in 0..search_limit {
-    //         let position_to_check = count.saturating_sub(1 + i);
-    //         let idx = (position_to_check % 10000) * 2;
-    //         let stored_high = self.processed_ids[idx as usize].load(Ordering::Acquire);
-    //         let stored_low = self.processed_ids[(idx + 1) as usize].load(Ordering::Acquire);
+        let idx = (self.record_count.fetch_add(1, Ordering::AcqRel) % 50000) as usize;
 
-    //         if stored_high == high && stored_low == low {
-    //             return false;
-    //         }
-    //     }
-    //     let position = self.processed_count.fetch_add(1, Ordering::AcqRel);
-    //     let idx = (position % 10000) * 2;
-
-    //     let existing_high = self.processed_ids[idx as usize].load(Ordering::Acquire);
-    //     let existing_low = self.processed_ids[(idx + 1) as usize].load(Ordering::Acquire);
-
-    //     if existing_high != 0 || existing_low != 0 {
-    //         if existing_high == high && existing_low == low {
-    //             return false;
-    //         }
-    //     }
-
-    //     self.processed_ids[idx as usize].store(high, Ordering::Release);
-    //     self.processed_ids[(idx + 1) as usize].store(low, Ordering::Release);
-
-    //     true
-    // }
-}
-
-// Estrutura mais leve para filtragem por data
-#[derive(Debug, Clone)]
-pub struct LightPaymentRecord {
-    pub amount_cents: u16,
-    pub is_default_processor: bool,
-    pub timestamp: DateTime<Utc>,
+        unsafe {
+            std::ptr::write(self.records.as_ptr().add(idx) as *mut PaymentRecord, record);
+        }
+    }
 }
 
 pub struct SharedMemoryManager {
     _mmap: MmapMut,
     summary: &'static PaymentSummaryShared,
-    processed_payments: Mutex<HashSet<Uuid>>,
-    // Vec mais leve só para filtragem por data (quando necessário)
-    light_records: Mutex<Vec<LightPaymentRecord>>,
 }
 
 impl SharedMemoryManager {
@@ -140,8 +130,6 @@ impl SharedMemoryManager {
         Ok(Self {
             _mmap: mmap,
             summary,
-            processed_payments: Mutex::new(HashSet::new()),
-            light_records: Mutex::new(Vec::new()),
         })
     }
 
@@ -166,20 +154,9 @@ impl SharedMemoryManager {
         is_default_processor: bool,
         timestamp: DateTime<Utc>,
     ) -> bool {
-        // Atualiza contadores atômicos (operação ultra-rápida)
         self.summary.add_payment(amount_cents, is_default_processor);
-
-        // Armazena registro leve apenas para filtragem por data (quando necessário)
-        // Lock muito rápido - apenas 12 bytes por record (vs 40 bytes antes)
-        {
-            let mut records = self.light_records.lock().unwrap();
-            records.push(LightPaymentRecord {
-                amount_cents,
-                is_default_processor,
-                timestamp,
-            });
-        }
-
+        self.summary
+            .add_payment_record(amount_cents, is_default_processor, timestamp);
         true
     }
 
@@ -193,7 +170,6 @@ impl SharedMemoryManager {
         from_str: Option<&str>,
         to_str: Option<&str>,
     ) -> io::Result<(u64, u64, u64, u64)> {
-        // Se nenhum filtro de data for fornecido, retorna todos os dados (caminho rápido)
         if from_str.is_none() && to_str.is_none() {
             return Ok(self.get_summary());
         }
@@ -212,25 +188,30 @@ impl SharedMemoryManager {
         let from_date = from_str.map(|s| parse_date(s, "from")).transpose()?;
         let to_date = to_str.map(|s| parse_date(s, "to")).transpose()?;
 
-        let records = self.light_records.lock().unwrap();
+        let record_count = self.summary.record_count.load(Ordering::Acquire);
+        let mut summary = (0u64, 0u64, 0u64, 0u64);
 
-        let summary = records
-            .iter()
-            .filter(|record| {
-                let from_ok = from_date.map_or(true, |from| record.timestamp >= from);
-                let to_ok = to_date.map_or(true, |to| record.timestamp <= to);
-                from_ok && to_ok
-            })
-            .fold((0u64, 0u64, 0u64, 0u64), |mut acc, record| {
-                if record.is_default_processor {
-                    acc.0 += 1;
-                    acc.1 += record.amount_cents as u64;
+        for i in 0..std::cmp::min(record_count, 50000) {
+            let idx = i as usize;
+            let record = unsafe { std::ptr::read(&self.summary.records[idx]) };
+
+            let timestamp =
+                DateTime::from_timestamp(record.timestamp_secs as i64, record.timestamp_nanos)
+                    .unwrap_or_else(|| Utc::now());
+
+            let from_ok = from_date.map_or(true, |from| timestamp >= from);
+            let to_ok = to_date.map_or(true, |to| timestamp <= to);
+
+            if from_ok && to_ok {
+                if record.is_default_processor == 1 {
+                    summary.0 += 1;
+                    summary.1 += record.amount_cents as u64;
                 } else {
-                    acc.2 += 1;
-                    acc.3 += record.amount_cents as u64;
+                    summary.2 += 1;
+                    summary.3 += record.amount_cents as u64;
                 }
-                acc
-            });
+            }
+        }
 
         Ok(summary)
     }
@@ -260,8 +241,6 @@ impl Clone for SharedMemoryManager {
         Self {
             _mmap: mmap,
             summary,
-            processed_payments: Mutex::new(HashSet::new()),
-            light_records: Mutex::new(Vec::new()),
         }
     }
 }

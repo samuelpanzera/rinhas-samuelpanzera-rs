@@ -11,8 +11,6 @@ pub fn handle_payments_summary(
     res: &mut Response,
     shared_memory: &SharedMemoryManager,
 ) -> io::Result<()> {
-
-
     let (from, to) = parse_query_params_from_path(req.path());
 
     let result = shared_memory.get_summary_range(from.as_deref(), to.as_deref());
@@ -46,10 +44,11 @@ pub fn handle_payments_summary(
                 .header("Cache-Control: no-cache")
                 .body_mut()
                 .extend_from_slice(&json_body);
-
             Ok(())
         }
-        Err(e) => Err(e)
+        Err(e) => {
+            Err(e)
+        }
     }
 }
 

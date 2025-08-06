@@ -27,7 +27,6 @@ pub fn handle_payment(
         correlation_id: payment_req.correlation_id,
         amount: payment_req.amount,
         amount_cents,
-        retry_count: 0,
     };
 
     match payment_processor.queue_payment(queued_payment) {

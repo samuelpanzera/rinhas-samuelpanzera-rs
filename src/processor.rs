@@ -16,7 +16,6 @@ pub struct QueuedPayment {
     pub correlation_id: Uuid,
     pub amount: Decimal,
     pub amount_cents: u16,
-    pub retry_count: u8,
 }
 
 pub struct PaymentProcessor {
@@ -50,10 +49,8 @@ impl PaymentProcessor {
             let mut success = false;
 
             for attempt in 1..=5 {
-
-                match Self::call_processor(&payment, true).await {
+                match Self::call_processor(&payment, true, &shared_memory).await {
                     Ok(_) => {
-                        Self::save_successful_payment(&payment, true, &shared_memory).await;
                         success = true;
                         break;
                     }
@@ -66,22 +63,16 @@ impl PaymentProcessor {
             }
 
             if !success {
-                match Self::call_processor(&payment, false).await {
-                    Ok(_) => {
-                        Self::save_successful_payment(&payment, false, &shared_memory).await;
-                    }
-                    Err(_) => {}
-                }
+                let _ = Self::call_processor(&payment, false, &shared_memory).await;
             }
-
-
         }
     }
 
     async fn call_processor(
         payment: &QueuedPayment,
         is_default: bool,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        shared_memory: &Arc<SharedMemoryManager>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let base_url = if is_default {
             env::var("PAYMENT_PROCESSOR_URL_DEFAULT")
                 .unwrap_or_else(|_| "http://localhost:8001".to_string())
@@ -114,21 +105,15 @@ impl PaymentProcessor {
         .await??;
 
         if response.status().is_success() {
-            Ok(response.text().await?)
+            shared_memory.add_payment_if_new(
+                payment.correlation_id,
+                payment.amount_cents,
+                is_default,
+                requested_at,
+            );
+            Ok(())
         } else {
             Err(format!("HTTP Error: {}", response.status()).into())
         }
-    }
-
-    async fn save_successful_payment(
-        payment: &QueuedPayment,
-        is_default_processor: bool,
-        shared_memory: &Arc<SharedMemoryManager>,
-    ) {
-        shared_memory.add_payment_if_new(
-            payment.correlation_id,
-            payment.amount_cents,
-            is_default_processor,
-        );
     }
 }

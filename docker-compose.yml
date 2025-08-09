@@ -3,7 +3,7 @@
 
 services: 
   api1: &api-base
-    build: .
+    image: samuelpanzera/rinha-samuel-panzera:1.0
     hostname: "api-1"
     environment:
       - SERVER_ID=api-1

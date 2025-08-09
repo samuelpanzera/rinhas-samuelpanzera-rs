@@ -17,68 +17,21 @@ A meta era clara: criar a API mais rápida e eficiente possível para o desafio.
 ## 🏗️ Decisões Técnicas e Arquitetura
 
 ```mermaid
-flowchart TD
-    %% Cliente e Load Balancer
-    Client[👤 Cliente] --> LB[🔄 Nginx Load Balancer<br/>porta 9999]
-
-    %% Instâncias da API
-    LB --> API1[🦀 API Instance 1<br/>May/MiniHttp<br/>Corrotinas]
-    LB --> API2[🦀 API Instance 2<br/>May/MiniHttp<br/>Corrotinas]
-
-    %% Endpoints das APIs
-    API1 --> |POST /payments| P1[💳 Payment Handler 1]
-    API1 --> |GET /payments-summary| S1[📊 Summary Handler 1]
-    API2 --> |POST /payments| P2[💳 Payment Handler 2]
-    API2 --> |GET /payments-summary| S2[📊 Summary Handler 2]
-
-    %% Processadores de Pagamento (dentro de cada API)
-    P1 --> PP1[⚙️ Payment Processor 1<br/>Async Queue + Worker]
-    P2 --> PP2[⚙️ Payment Processor 2<br/>Async Queue + Worker]
-
-    %% Memória Compartilhada (Critical!)
-    SM[(🧠 Shared Memory<br/>Memory-Mapped File<br/>Atomic Operations<br/>50k Records + Counters)]
-
-    PP1 --> SM
-    PP2 --> SM
-    S1 --> SM
-    S2 --> SM
-
-    %% Processadores Externos
-    PP1 --> |HTTP POST<br/>5 tentativas + fallback| EXT1[🌐 Payment Processor Default<br/>:8080]
-    PP1 --> |Se falhar| EXT2[🌐 Payment Processor Fallback<br/>:8080]
-    PP2 --> |HTTP POST<br/>5 tentativas + fallback| EXT1
-    PP2 --> |Se falhar| EXT2
-
-    %% Docker Network
-    subgraph Docker["🐳 Docker Compose Environment"]
-        subgraph Network1["backend-rs network"]
-            LB
-            API1
-            API2
-            SM
-        end
-
-        subgraph Network2["payment-processor network"]
-            EXT1
-            EXT2
-        end
-    end
-
-    %% Shared Volume
-    subgraph Volume["📁 Shared Volume (tmpfs)"]
-        SM
-    end
-
-    %% Styling
-    classDef apiNode fill:#f9a,stroke:#333,stroke-width:2px
-    classDef processor fill:#9f9,stroke:#333,stroke-width:2px
+flowchart LR
+    Client["👤 Cliente"] --> LB["🔄 Nginx<br>:9999"]
+    LB --> API1["🦀 API 1<br>May/MiniHttp"] & API2["🦀 API 2<br>May/MiniHttp"]
+    API1 --> SM[("🧠 Shared Memory<br>Memory-Mapped File")] & EXT["🌐 Payment Processors<br>"]
+    API2 --> SM & EXT
+     LB:::balancer
+     API1:::api
+     API2:::api
+     SM:::storage
+     EXT:::external
+    classDef api fill:#f9a,stroke:#333,stroke-width:2px
+    classDef storage fill:#ff9,stroke:#333,stroke-width:3px
     classDef external fill:#99f,stroke:#333,stroke-width:2px
-    classDef memory fill:#ff9,stroke:#333,stroke-width:3px
-
-    class API1,API2 apiNode
-    class PP1,PP2,P1,P2,S1,S2 processor
-    class EXT1,EXT2 external
-    class SM memory
+    classDef balancer fill:#9f9,stroke:#333,stroke-width:2px
+    style LB fill:#000000
 ```
 
 ### 🏗️ Fluxo de Processamento de Pagamentos
